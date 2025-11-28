@@ -13,10 +13,11 @@ export default function Home() {
     { role: "assistant", content: "Hello! How can I help you today?" },
   ]);
   const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || isLoading) return;
 
     const newMessages: Message[] = [
       ...messages,
@@ -24,14 +25,33 @@ export default function Home() {
     ];
     setMessages(newMessages);
     setInput("");
+    setIsLoading(true);
 
-    // Simulate response
-    setTimeout(() => {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+    const response = await fetch(`${apiUrl}/agent/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messages: newMessages }),
+    });
+
+    if (!response.ok) {
       setMessages([
         ...newMessages,
-        { role: "assistant", content: "I am a simple demo bot. I received your message: " + input },
+        { role: "assistant", content: "Sorry, I encountered an error. Please try again." },
       ]);
-    }, 1000);
+      setIsLoading(false);
+      return;
+    }
+
+    const data = await response.json();
+    setMessages([
+      ...newMessages,
+      { role: "assistant", content: data.response },
+    ]);
+    setIsLoading(false);
   };
 
   return (
@@ -83,7 +103,7 @@ export default function Home() {
                 />
                 <button
                   type="submit"
-                  disabled={!input.trim()}
+                  disabled={!input.trim() || isLoading}
                   className="absolute right-2 p-2.5 rounded-full bg-primary text-white hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   <ArrowRight size={20} weight="bold" />
