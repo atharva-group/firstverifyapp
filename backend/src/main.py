@@ -23,12 +23,17 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[Message]
 
+from fastapi.responses import StreamingResponse
+
 @app.post("/agent/chat")
 async def chat(request: ChatRequest):
     # Convert Pydantic models to dicts
     messages = [m.dict() for m in request.messages]
-    response = await agent.chat(messages)
-    return {"response": response}
+    
+    return StreamingResponse(
+        agent.chat(messages),
+        media_type="text/event-stream"
+    )
 
 @app.get("/health")
 async def health():

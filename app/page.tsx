@@ -57,10 +57,63 @@ export default function Home() {
         throw new Error("Network response was not ok");
       }
 
-      const data = await response.json();
-      const fullContent = data.response;
+      if (!response.body) throw new Error("Response body is null");
 
-      // Parse out JSON block
+      // Initialize empty assistant message
+      const assistantMessage: Message = { role: "assistant", content: "" };
+      setMessages((prev) => [...prev, assistantMessage]);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        fullContent += chunk;
+
+        // Check for complete JSON block
+        const jsonMatch = fullContent.match(/```json\n([\s\S]*?)\n```/);
+        let currentAnalysisData = null;
+        if (jsonMatch) {
+          try {
+            currentAnalysisData = JSON.parse(jsonMatch[1]);
+          } catch (e) {
+            // ignore incomplete or bad json
+          }
+        }
+
+        // Check if we are currently receiving a JSON block (partial)
+        // We have an open tag but no close tag after it, OR we have a close tag but another open tag after it
+        const lastOpen = fullContent.lastIndexOf("```json");
+        const lastClose = fullContent.lastIndexOf("```");
+        const isAnalyzing = lastOpen > -1 && (lastClose === lastOpen);
+
+        // Calculate content to display by hiding JSON blocks
+        let displayContent = fullContent.replace(/```json[\s\S]*?```/g, ""); // Remove complete blocks
+        displayContent = displayContent.replace(/```json[\s\S]*/, ""); // Remove partial block at end
+
+        if (isAnalyzing) {
+          displayContent += "Analyzing...";
+        }
+
+        // Update the last message (assistant's message) with new content and analysis data
+        setMessages((prev) => {
+          const updated = [...prev];
+          const currentMsg = updated[updated.length - 1];
+          updated[updated.length - 1] = {
+            ...currentMsg,
+            content: displayContent,
+            // Only update analysisData if we found it, otherwise keep existing (if any)
+            analysisData: currentAnalysisData || currentMsg.analysisData,
+          };
+          return updated;
+        });
+      }
+
+      // Parse out JSON block after stream is complete
       const jsonMatch = fullContent.match(/```json\n([\s\S]*?)\n```/);
       let analysisData = null;
       let textContent = fullContent;
@@ -75,13 +128,21 @@ export default function Home() {
         }
       }
 
-      setMessages([
-        ...newMessages,
-        { role: "assistant", content: textContent, analysisData },
-      ]);
+      // Final update with parsed analysis data and cleaned text
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          role: "assistant",
+          content: textContent,
+          analysisData,
+        };
+        return updated;
+      });
+
     } catch (error) {
-      setMessages([
-        ...newMessages,
+      console.error("Error:", error);
+      setMessages((prev) => [
+        ...prev,
         { role: "assistant", content: "Sorry, I encountered an error. Please try again." },
       ]);
     } finally {

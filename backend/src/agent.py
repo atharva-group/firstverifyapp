@@ -28,28 +28,75 @@ class OpenRouterAgent:
             "model": self.model,
             "messages": messages,
             "tools": tools,
-            "max_tokens": 64000
+            "max_tokens": 64000,
+            "stream": True
         }
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            message = data["choices"][0]["message"]
-            
-            # Handle tool calls
-            if message.get("tool_calls"):
-                tool_calls = message["tool_calls"]
-                messages.append(message) # Add assistant message with tool calls
+            # First request - might be content or tool calls
+            async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as response:
+                response.raise_for_status()
+                
+                tool_calls = []
+                current_tool_call = None
+                
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        
+                        try:
+                            data = json.loads(data_str)
+                            delta = data["choices"][0]["delta"]
+                            
+                            # Handle content
+                            if "content" in delta and delta["content"]:
+                                yield delta["content"]
+                                
+                            # Handle tool calls
+                            if "tool_calls" in delta:
+                                for tc_delta in delta["tool_calls"]:
+                                    if "id" in tc_delta:
+                                        # New tool call starting
+                                        if current_tool_call:
+                                            tool_calls.append(current_tool_call)
+                                        current_tool_call = {
+                                            "id": tc_delta["id"],
+                                            "function": {
+                                                "name": tc_delta["function"]["name"],
+                                                "arguments": ""
+                                            },
+                                            "type": "function"
+                                        }
+                                    elif "function" in tc_delta and "arguments" in tc_delta["function"]:
+                                        # Appending arguments to current tool call
+                                        if current_tool_call:
+                                            current_tool_call["function"]["arguments"] += tc_delta["function"]["arguments"]
+                                            
+                        except json.JSONDecodeError:
+                            continue
+                            
+                # Append the last tool call if exists
+                if current_tool_call:
+                    tool_calls.append(current_tool_call)
+
+            # If we have tool calls, execute them and make a second request
+            if tool_calls:
+                # Add the assistant's message with tool calls to history
+                messages.append({
+                    "role": "assistant",
+                    "tool_calls": tool_calls,
+                    "content": None
+                })
                 
                 for tool_call in tool_calls:
                     function_name = tool_call["function"]["name"]
-                    function_args = json.loads(tool_call["function"]["arguments"])
+                    try:
+                        function_args = json.loads(tool_call["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        # Fallback or error handling for bad JSON
+                        function_args = {}
                     
                     if function_name == "search":
                         tool_result = await serper_search(
@@ -64,18 +111,21 @@ class OpenRouterAgent:
                             "content": tool_result
                         })
                 
-                # Get final response after tool execution
+                # Second request with tool results
                 payload["messages"] = messages
-                # Remove tools from second call to force a final answer (optional, but good for simple agents)
-                # payload.pop("tools") 
+                # payload.pop("tools") # Optional: remove tools to force final answer
                 
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
-            
-            return message["content"]
+                async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                delta = data["choices"][0]["delta"]
+                                if "content" in delta and delta["content"]:
+                                    yield delta["content"]
+                            except json.JSONDecodeError:
+                                continue
