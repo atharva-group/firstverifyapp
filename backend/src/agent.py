@@ -52,7 +52,11 @@ class OpenRouterAgent:
                     function_args = json.loads(tool_call["function"]["arguments"])
                     
                     if function_name == "search":
-                        tool_result = await serper_search(function_args["query"])
+                        tool_result = await serper_search(
+                            query=function_args.get("query"),
+                            search_type=function_args.get("search_type", "search"),
+                            tbs=function_args.get("tbs", "qdr:w")
+                        )
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
